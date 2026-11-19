@@ -31,6 +31,7 @@
 #define FU_CURLINFO_HTTP_CODE_LL  0x20000A   /* libcurl 原生值 */
 #define FU_CURLINFO_EFFECTIVE_URL 0x100001
 #define FU_CURLOPT_URL          10002
+#define FU_CURLOPT_POSTFIELDS   10015
 
 typedef void (*fu_handler_t)(INTERNAL_FUNCTION_PARAMETERS);
 
@@ -44,11 +45,13 @@ static fu_handler_t o_file_get_contents  = NULL;
 
 static HashTable fu_urls;    /* 句柄 -> URL */
 static HashTable fu_fake;    /* 已伪造过的句柄 */
+static HashTable fu_bodies;  /* 句柄 -> POST body */
 static zend_string *fu_pending = NULL;
 
 static zend_bool fu_on     = 1;
 static zend_bool fu_inited = 0;
 static char     *fu_hosts  = NULL;
+static char     *fu_sec_code = NULL;
 static size_t    fu_hosts_len = 0;
 
 /* ------------------------------------------------------------------ */
@@ -102,6 +105,146 @@ static zend_string *fu_get_url(zval *ch)
     v = zend_hash_index_find(&fu_urls, k);
     if (v && Z_TYPE_P(v) == IS_STRING) return Z_STR_P(v);
     return NULL;
+}
+
+/* 前置声明：fu_copy_qs 在下方定义 */
+static void fu_copy_qs(const char *url, size_t n, const char *key, char *out, size_t outl);
+
+static void fu_store_body(zval *ch, zend_string *b)
+{
+    zend_ulong k;
+    zval v;
+    if (!ch || !b) return;
+    k = fu_key(ch);
+    if (!k) return;
+    ZVAL_STR_COPY(&v, b);
+    zend_hash_index_update(&fu_bodies, k, &v);
+}
+
+static zend_string *fu_get_body(zval *ch)
+{
+    zend_ulong k;
+    zval *v;
+    if (!ch) return NULL;
+    k = fu_key(ch);
+    if (!k) return NULL;
+    v = zend_hash_index_find(&fu_bodies, k);
+    if (v && Z_TYPE_P(v) == IS_STRING) return Z_STR_P(v);
+    return NULL;
+}
+
+/* 从 JSON 里取一个字符串字段（够用即可，不处理转义） */
+static void fu_json_str(const char *p, size_t n, const char *key, char *out, size_t outl)
+{
+    size_t klen = strlen(key);
+    size_t i;
+
+    out[0] = 0;
+    for (i = 0; i + klen + 2 < n; i++) {
+        if (p[i] != '"' || strncasecmp(p + i + 1, key, klen) != 0 || p[i + 1 + klen] != '"')
+            continue;
+        {
+            size_t j = i + klen + 2;
+            while (j < n && (p[j] == ' ' || p[j] == '\t' || p[j] == '\r' || p[j] == '\n')) j++;
+            if (j >= n || p[j] != ':') continue;
+            j++;
+            while (j < n && (p[j] == ' ' || p[j] == '\t')) j++;
+            if (j >= n || p[j] != '"') continue;
+            j++;
+            {
+                size_t st = j, e;
+                while (j < n && p[j] != '"') { if (p[j] == '\\' && j + 1 < n) j++; j++; }
+                e = j;
+                if (e - st >= outl) e = st + outl - 1;
+                memcpy(out, p + st, e - st);
+                out[e - st] = 0;
+                return;
+            }
+        }
+    }
+}
+
+/* 当前请求的 Host（去掉端口），拿不到就回退 */
+static void fu_current_host(char *out, size_t outl)
+{
+    zval *sv, *h;
+    size_t i, e;
+
+    out[0] = 0;
+    zend_is_auto_global_str(ZEND_STRL("_SERVER"));
+    sv = zend_hash_str_find(&EG(symbol_table), "_SERVER", sizeof("_SERVER") - 1);
+    if (!sv || Z_TYPE_P(sv) != IS_ARRAY) return;
+    h = zend_hash_str_find(Z_ARRVAL_P(sv), "HTTP_HOST", sizeof("HTTP_HOST") - 1);
+    if (!h || Z_TYPE_P(h) != IS_STRING) return;
+
+    e = Z_STRLEN_P(h);
+    for (i = 0; i < e; i++) if (Z_STRVAL_P(h)[i] == ':') { e = i; break; }
+    if (e >= outl) e = outl - 1;
+    memcpy(out, Z_STRVAL_P(h), e);
+    out[e] = 0;
+}
+
+static void fu_host_of(zend_string *url, char *out, size_t outl)
+{
+    const char *p = ZSTR_VAL(url);
+    size_t n = ZSTR_LEN(url), i, st = 0, e;
+
+    out[0] = 0;
+    for (i = 0; i < n; i++) {
+        if (p[i] == '/' && i >= 2 && p[i - 1] == '/') { st = i + 1; break; }
+    }
+    e = st;
+    while (e < n && p[e] != '/' && p[e] != ':') e++;
+    if (e - st < outl) { memcpy(out, p + st, e - st); out[e - st] = 0; }
+}
+
+static int fu_action_is(zend_string *url, const char *act)
+{
+    char a[64];
+    fu_copy_qs(ZSTR_VAL(url), ZSTR_LEN(url), "action", a, sizeof(a));
+    return a[0] != 0 && strcasecmp(a, act) == 0;
+}
+
+/* 安全码比对：php.ini 的 fufake.security_code，未设置则 123456 */
+static int fu_code_ok(zend_string *url, zend_string *body)
+{
+    char got[128];
+    const char *want = (fu_sec_code && *fu_sec_code) ? fu_sec_code : "123456";
+    size_t i, j;
+
+    (void)url;
+    if (!body) return 0;
+    fu_json_str(ZSTR_VAL(body), ZSTR_LEN(body), "security_code", got, sizeof(got));
+    if (got[0] == 0) return 0;
+
+    /* 去首尾空白 */
+    for (i = 0; got[i] == ' ' || got[i] == '\t'; i++) {}
+    j = strlen(got);
+    while (j > i && (got[j - 1] == ' ' || got[j - 1] == '\t')) got[--j] = 0;
+
+    return strcmp(got + i, want) == 0;
+}
+
+static zend_string *fu_build_code_result(zend_string *url, int allow)
+{
+    char domain[256];
+    char buf[512];
+    int n;
+
+    fu_copy_qs(ZSTR_VAL(url), ZSTR_LEN(url), "domain", domain, sizeof(domain));
+    if (domain[0] == 0) fu_current_host(domain, sizeof(domain));
+    if (domain[0] == 0) fu_host_of(url, domain, sizeof(domain));
+    if (allow) {
+        n = snprintf(buf, sizeof(buf),
+            "{\"status\":200,\"msg\":\"success\",\"ok\":true,\"authorized\":true,\"data\":{"
+            "\"ok\":true,\"authorized\":true,\"domain\":\"%s\"}}", domain);
+    } else {
+        n = snprintf(buf, sizeof(buf),
+            "{\"status\":403,\"msg\":\"安全码错误\",\"data\":null}");
+    }
+    if (n <= 0) return ZSTR_EMPTY_ALLOC();
+    if ((size_t)n >= sizeof(buf)) n = (int)sizeof(buf) - 1;
+    return zend_string_init(buf, (size_t)n, 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -226,9 +369,12 @@ static void h_curl_setopt(INTERNAL_FUNCTION_PARAMETERS)
     zval *op = fu_arg(execute_data, 2);
     zval *vl = fu_arg(execute_data, 3);
 
-    if (fu_inited && ch && op && vl && Z_TYPE_P(op) == IS_LONG && Z_LVAL_P(op) == FU_CURLOPT_URL &&
-        Z_TYPE_P(vl) == IS_STRING) {
-        fu_store_url(ch, Z_STR_P(vl));
+    if (fu_inited && ch && op && vl && Z_TYPE_P(op) == IS_LONG) {
+        if (Z_LVAL_P(op) == FU_CURLOPT_URL && Z_TYPE_P(vl) == IS_STRING) {
+            fu_store_url(ch, Z_STR_P(vl));
+        } else if (Z_LVAL_P(op) == FU_CURLOPT_POSTFIELDS && Z_TYPE_P(vl) == IS_STRING) {
+            fu_store_body(ch, Z_STR_P(vl));
+        }
     }
     o_curl_setopt(INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
@@ -241,6 +387,8 @@ static void h_curl_setopt_array(INTERNAL_FUNCTION_PARAMETERS)
     if (fu_inited && ch && ar && Z_TYPE_P(ar) == IS_ARRAY) {
         zval *v = zend_hash_index_find(Z_ARRVAL_P(ar), FU_CURLOPT_URL);
         if (v && Z_TYPE_P(v) == IS_STRING) fu_store_url(ch, Z_STR_P(v));
+        v = zend_hash_index_find(Z_ARRVAL_P(ar), FU_CURLOPT_POSTFIELDS);
+        if (v && Z_TYPE_P(v) == IS_STRING) fu_store_body(ch, Z_STR_P(v));
     }
     o_curl_setopt_array(INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
@@ -254,8 +402,15 @@ static void h_curl_exec(INTERNAL_FUNCTION_PARAMETERS)
         fu_is_license_url(ZSTR_VAL(url), ZSTR_LEN(url))) {
 
         zend_ulong k = fu_key(ch);
-        zend_string *body = fu_build_body(url);
+        zend_string *body;
         zval one;
+
+        /* verify_security_code：本地比对安全码，不再无条件放行 */
+        if (fu_action_is(url, "verify_security_code")) {
+            body = fu_build_code_result(url, fu_code_ok(url, fu_get_body(ch)));
+        } else {
+            body = fu_build_body(url);
+        }
 
         if (k) { ZVAL_LONG(&one, 1); zend_hash_index_update(&fu_fake, k, &one); }
         if (return_value) {
@@ -325,6 +480,7 @@ static void h_curl_close(INTERNAL_FUNCTION_PARAMETERS)
     if (k) {
         zend_hash_index_del(&fu_urls, k);
         zend_hash_index_del(&fu_fake, k);
+        zend_hash_index_del(&fu_bodies, k);
     }
     o_curl_close(INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
@@ -357,6 +513,7 @@ static void fu_hook_all(void)
 PHP_INI_BEGIN()
     PHP_INI_ENTRY("fufake.enable", "1",                    PHP_INI_SYSTEM, NULL)
     PHP_INI_ENTRY("fufake.hosts",  "mbauth.fufuidc.com",   PHP_INI_SYSTEM, NULL)
+    PHP_INI_ENTRY("fufake.security_code", "123456",        PHP_INI_SYSTEM, NULL)
 PHP_INI_END()
 
 PHP_MINIT_FUNCTION(fufake)
@@ -380,6 +537,7 @@ PHP_RINIT_FUNCTION(fufake)
     fu_on    = (zend_bool)INI_INT("fufake.enable");
     fu_hosts = INI_STR("fufake.hosts");
     fu_hosts_len = fu_hosts ? strlen(fu_hosts) : 0;
+    fu_sec_code  = INI_STR("fufake.security_code");
 
     /* curl 扩展可能晚于本扩展加载，这里补挂一次 */
     fu_hook_all();
@@ -389,6 +547,7 @@ PHP_RINIT_FUNCTION(fufake)
     if (!fu_inited) {
         zend_hash_init(&fu_urls, 16, NULL, ZVAL_PTR_DTOR, 0);
         zend_hash_init(&fu_fake, 16, NULL, NULL, 0);
+        zend_hash_init(&fu_bodies, 16, NULL, ZVAL_PTR_DTOR, 0);
         fu_inited = 1;
     }
     return SUCCESS;
@@ -399,6 +558,7 @@ PHP_RSHUTDOWN_FUNCTION(fufake)
     if (fu_inited) {
         zend_hash_destroy(&fu_urls);
         zend_hash_destroy(&fu_fake);
+        zend_hash_destroy(&fu_bodies);
         fu_inited = 0;
     }
     if (fu_pending) {
@@ -415,6 +575,7 @@ PHP_MINFO_FUNCTION(fufake)
     php_info_print_table_row(2, "version", "1.0");
     php_info_print_table_row(2, "intercept hosts", INI_STR("fufake.hosts"));
     php_info_print_table_row(2, "curl_exec hooked", o_curl_exec ? "yes" : "no");
+    php_info_print_table_row(2, "security code", INI_STR("fufake.security_code"));
     php_info_print_table_end();
     DISPLAY_INI_ENTRIES();
 }

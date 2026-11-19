@@ -13,7 +13,7 @@
 | 前台授权校验 | `fu_license_guard()` / `fu_license_is_authorized()` 拿到 `ok = true`，不查库、不发请求 |
 | 后台 API 门禁 | `api/index.php` 的全局前置判定通过，除 `license_status` / `license_recheck` 外所有 action 正常可用 |
 | 购物车 AJAX | `cart_catalog.php` 返回正常 JSON，不再 `403` |
-| 敏感操作二次校验 | `verify_security_code` 返回 `ok = true`，改域名等操作不再被拦 |
+| 敏感操作二次校验 | `verify_security_code` 不再请求授权服务器，改由本扩展本地比对安全码 |
 | 在线更新 | 不影响 `update.fufuidc.com`，OTA 照旧可走 |
 
 ---
@@ -40,7 +40,9 @@ ionCube 15 用自己的私有解释器执行 op_array，函数入口处拦不住
    （顶层与 `data` 内同时带 `authorized` / `ok = true`，兼容两种取法）；
 3. 替换 `curl_getinfo()` 的 handler，对伪造句柄返回 `CURLINFO_HTTP_CODE = 200`；
 4. `curl_exec()` 返回 `false`（服务器不可达）时同样兜底，避免落进 `network` / `stale` 分支；
-5. 替换 `file_get_contents()` 的 handler，未启用 curl 的环境同样生效。
+5. 替换 `file_get_contents()` 的 handler，未启用 curl 的环境同样生效；
+6. `action=verify_security_code` 单独处理：从 POST body 里取出 `security_code`，
+   与 `fufake.security_code` 比对，匹配才返回 `status = 200`，否则返回 `status = 403 / 安全码错误`。
 
 以上都只替换函数表中的 handler 指针，不修改磁盘文件、不写数据库、不碰 ionCube。
 
@@ -214,8 +216,9 @@ unzip -p "fu-theme-${V}.zip" VERSION
 ```ini
 extension=/www/server/php/74/lib/php/extensions/no-debug-non-zts-20190902/fufake.so
 
-fufake.enable = 1
-fufake.hosts  = mbauth.fufuidc.com
+fufake.enable        = 1
+fufake.hosts         = mbauth.fufuidc.com
+fufake.security_code = 123456
 ```
 
 ```bash
@@ -233,6 +236,7 @@ php --ri fufake
 |---|---|---|
 | `fufake.enable` | `1` | 总开关 |
 | `fufake.hosts` | `mbauth.fufuidc.com` | 要拦截的授权服务器域名 |
+| `fufake.security_code` | `123456` | 敏感操作安全码。后台解锁、改域名、重置管理员密码都校验这个值 |
 
 ---
 
@@ -251,6 +255,18 @@ echo curl_getinfo($c,CURLINFO_HTTP_CODE),"\n";'
 php -r 'define("CMF_ROOT","/www/wwwroot/your-site/"); $_SERVER["HTTP_HOST"]="你的域名";
 include "/www/wwwroot/your-site/data/fu-theme/License.php";
 var_dump(fu_license_is_authorized(true));'
+```
+
+安全码单独验证（应输出“通过 / 拒绝 / 拒绝”）：
+
+```bash
+php -r 'define("CMF_ROOT","/www/wwwroot/your-site/"); $_SERVER["HTTP_HOST"]="你的域名";
+include "/www/wwwroot/your-site/data/fu-theme/License.php";
+include "/www/wwwroot/your-site/data/fu-theme/FileManager.php";
+foreach (["123456","000000"] as $c) {
+    try { fu_sensitive_verify_against_license($c, ""); echo "$c 通过\n"; }
+    catch (Throwable $e) { echo "$c 拒绝（".$e->getMessage()."）\n"; }
+}'
 ```
 
 模板命中后会把结果写进 `data/fu-theme/storage/license.cache.json`，
