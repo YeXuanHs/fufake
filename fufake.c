@@ -442,7 +442,7 @@ static void h_curl_exec(INTERNAL_FUNCTION_PARAMETERS)
 
 /* 读授权缓存时把 domain 改写成当前请求域名：
    License.php 遇到 domain 不一致会按 NEG_TTL(300s) 直接返回未授权、且不发请求，
-   只要有人用 127.0.0.1 访问一次，真实访客就会被挡 5 分钟。 */
+   只要有人用别的主机名访问一次，真实访客就会被挡 5 分钟。 */
 static int fu_is_cache_path(const char *p, size_t n)
 {
     static const char key[] = "license.cache.json";

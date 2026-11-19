@@ -296,7 +296,7 @@ chown www:www /www/wwwroot/your-site/data/fu-theme/VERSION
 验证：
 
 ```bash
-curl -s 'http://127.0.0.1:9178/<后台目录>/api/index.php?action=update_check'   # 需登录
+curl -s 'https://www.example.com/<后台目录>/api/index.php?action=update_check'   # 需登录
 # data.local 应为 1.0.82，与 data.remote 一致后显示"已是最新"
 ```
 
