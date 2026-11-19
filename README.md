@@ -272,6 +272,36 @@ php --ri fufake
 
 ---
 
+## 手动安装模板时的版本号
+
+后台「在线更新」页的**本地版本**读的是 `data/fu-theme/VERSION`（`api/index.php:295` 的 `FU_VERSION_FILE`），
+读不到就 fallback 成 `1.0.0`——包里的版本号会显示成 1.0.0。
+
+手动铺文件时注意目录要成对：
+
+```
+站点根目录/data/fu-theme/VERSION      ← 后台实际读这个
+站点根目录/public/data/fu-theme/...   ← 包里自带的路径
+```
+
+`public/data/fu-theme/VERSION` 是包内自带的，但代码取的是 `CMF_ROOT . 'data/fu-theme/'`，
+`CMF_ROOT` 由 `dirname(__DIR__, 3)` 从后台目录推出来，就是站点根目录。所以要把 `VERSION`
+放到**站点根目录的 `data/fu-theme/`** 下：
+
+```bash
+printf '1.0.82\n' > /www/wwwroot/your-site/data/fu-theme/VERSION
+chown www:www /www/wwwroot/your-site/data/fu-theme/VERSION
+```
+
+验证：
+
+```bash
+curl -s 'http://127.0.0.1:9178/<后台目录>/api/index.php?action=update_check'   # 需登录
+# data.local 应为 1.0.82，与 data.remote 一致后显示"已是最新"
+```
+
+---
+
 ## 配置项
 
 | 键 | 默认 | 说明 |
