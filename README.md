@@ -251,6 +251,27 @@ location ~ /assets/js/(fu-rt|fy-g-[0-9a-f]+)\.js$ {
 
 ---
 
+## 其他定制（files/ 目录）
+
+`files/` 里除了 JS 守卫，还放了后台「关于我们」页面的定制版，按原层级覆盖即可：
+
+| 文件 | 改了什么 |
+|---|---|
+| `fu-theme-admin/assets/About-CKr4JvPJ.js` | 人员列表里新增一位「Ena / 开心版授权·解密源码 / 2338795574@qq.com」，头像走 `q1.qlogo.cn` 外链 |
+
+```bash
+SITE=/www/wwwroot/your-site/public
+cp -a files/fu-theme-admin/. "$SITE/fu-theme-admin/"
+```
+
+覆盖完让浏览器硬刷一次（assets 默认缓存 12h）。
+
+**注意文件名带构建 hash**（`About-CKr4JvPJ.js`）。主题升级后这个 hash 可能变化，
+新版本里就找不到同名文件了——那时要把旧文件里的 `const n=[...]` 人员数组手工搬到新文件里，
+或者对比一下 `git diff` 重新打。
+
+---
+
 ## 安装
 
 把对应版本的 `.so` 放进 `extension_dir`，在 `php.ini` 中追加：
