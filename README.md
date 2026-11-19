@@ -60,7 +60,7 @@ ionCube 15 用自己的私有解释器执行 op_array，函数入口处拦不住
 
 ---
 
-## 获取安装包
+## 获取扩展
 
 ### 方式一：gh CLI（推荐，私有仓也能拉）
 
@@ -125,6 +125,101 @@ sha256sum -c SHA256SUMS --ignore-missing
 gh run list -R YeXuanHs/fufake -L 1
 gh run download -R YeXuanHs/fufake <run-id> -D dist
 ```
+
+---
+
+## 获取模板包（芙云模板本体）
+
+模板自己的 OTA 接口，不需要授权就能查版本和下载安装包。
+
+### 查最新版本
+
+```bash
+curl -s 'https://update.fufuidc.com/api.php?action=latest&product=fu-theme'
+```
+
+返回：
+
+```json
+{
+  "status": 200,
+  "msg": "success",
+  "data": {
+    "version": "1.0.82",
+    "channel": "stable",
+    "channel_name": "正式版",
+    "force": 0,
+    "changelog": "v1.0.82 2026/11/15\n模板更新：\n1.……",
+    "download": "http://update.fufuidc.com/api.php?action=download&product=fu-theme&version=1.0.82",
+    "size": 40209208,
+    "released_at": "2026-11-15T17:58:59+08:00"
+  }
+}
+```
+
+只取版本号：
+
+```bash
+curl -s 'https://update.fufuidc.com/api.php?action=latest&product=fu-theme' \
+  | sed -n 's/.*"version":"\([^"]*\)".*/\1/p'
+```
+
+### 下载安装包
+
+下载地址就是 `download` 字段，也可以直接按版本号拼：
+
+```bash
+V=1.0.82
+curl -fL --progress-bar -o "fu-theme-${V}.zip" \
+  "https://update.fufuidc.com/api.php?action=download&product=fu-theme&version=${V}"
+```
+
+一条命令拿到最新版：
+
+```bash
+V=$(curl -s 'https://update.fufuidc.com/api.php?action=latest&product=fu-theme' \
+    | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+curl -fL -o "fu-theme-${V}.zip" \
+  "https://update.fufuidc.com/api.php?action=download&product=fu-theme&version=${V}"
+unzip -p "fu-theme-${V}.zip" VERSION
+```
+
+注意两点：
+
+- 接口返回的 `download` 是 `http://`，模板自己也会强制改成 `https://`，按 https 拉即可
+- 返回体直接是 zip（`Content-Type: application/zip`，文件名 `fu-theme-<版本>.zip`），没有 302
+
+### 走后台自带的在线更新
+
+后台「在线更新」调的是同一套接口，实现在 `fu-theme-admin/api/index.php`：
+
+| action | 作用 |
+|---|---|
+| `update_check` | 读 `config/VERSION`，请求 `action=latest`，比较版本号 |
+| `update_apply` | 下载到 `data/fu-theme/tmp_update/package.zip`，解压后按目录映射覆盖 |
+
+覆盖映射：
+
+| 包内 | 目标 |
+|---|---|
+| `themes/web/fuwww` | `public/themes/web/fuwww` |
+| `themes/clientarea/fuuser` | `public/themes/clientarea/fuuser` |
+| `themes/cart/fucart` | `public/themes/cart/fucart` |
+| `fu-theme-admin` | 当前后台目录 |
+
+覆盖前会备份并还原 `storage/settings.json` 与 `storage/secrets.enc`。
+
+### 包内结构
+
+| 路径 | 内容 |
+|---|---|
+| `VERSION` | 版本号，也是升级后写入 `config/VERSION` 的取值来源 |
+| `data/fu-theme/` | 组件 JSON、`storage/`、加密的 License / Auth / Storage 等 |
+| `fu-theme-admin/` | 后台（含 `api/`、`_seed/`、`bridge.php`） |
+| `themes/` | 三个前台主题，854 个文件 |
+| `upload/` | 只有系统图标 svg，**手动覆盖会冲掉站点已有的上传目录** |
+
+手动升级建议只挑改动文件覆盖，别整包解压到站点根目录。
 
 ---
 
