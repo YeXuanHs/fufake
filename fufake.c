@@ -30,7 +30,7 @@
 #define FU_CURLINFO_HTTP_CODE     0x200002   /* PHP 注册值 */
 #define FU_CURLINFO_HTTP_CODE_LL  0x20000A   /* libcurl 原生值 */
 #define FU_CURLINFO_EFFECTIVE_URL 0x100001
-#define FU_VERSION              "1.1.0"
+#define FU_VERSION              "1.1.1"
 #define FU_CURLOPT_URL          10002
 #define FU_CURLOPT_POSTFIELDS   10015
 
@@ -326,7 +326,9 @@ static zend_string *fu_build_body(zend_string *url)
         n = snprintf(buf, sizeof(buf),
             "{\"status\":200,\"msg\":\"success\",\"ok\":true,\"authorized\":true,\"data\":{"
             "\"domain\":\"%s\",\"main_domain\":\"%s\",\"product\":\"fu-theme\",\"authorized\":true,"
-            "\"ok\":true,\"license\":\"official\",\"expire_at\":\"2099-12-31 23:59:59\"}}",
+            "\"ok\":true,\"has_security_code\":true,\"license\":\"official\","
+            "\"domain_change_count\":0,\"domain_change_limit\":3,\"domain_change_left\":3,"
+            "\"expire_at\":\"2099-12-31 23:59:59\"}}",
             domain, domain);
     } else if (strcasecmp(action, "verify_security_code") == 0) {
         n = snprintf(buf, sizeof(buf),
@@ -437,6 +439,55 @@ static void h_curl_exec(INTERNAL_FUNCTION_PARAMETERS)
     }
 }
 
+
+/* 读授权缓存时把 domain 改写成当前请求域名：
+   License.php 遇到 domain 不一致会按 NEG_TTL(300s) 直接返回未授权、且不发请求，
+   只要有人用 127.0.0.1 访问一次，真实访客就会被挡 5 分钟。 */
+static int fu_is_cache_path(const char *p, size_t n)
+{
+    static const char key[] = "license.cache.json";
+    size_t k = sizeof(key) - 1;
+    return n >= k && strncasecmp(p + n - k, key, k) == 0;
+}
+
+static zend_string *fu_patch_cache(zend_string *raw)
+{
+    char host[256];
+    const char *p = ZSTR_VAL(raw);
+    size_t n = ZSTR_LEN(raw);
+    size_t i, j, st, e;
+
+    fu_current_host(host, sizeof(host));
+    if (host[0] == 0) return NULL;
+
+    /* 找 "domain" 键 */
+    for (i = 0; i + 8 < n; i++) {
+        if (p[i] == '"' && strncasecmp(p + i + 1, "domain", 6) == 0 && p[i + 7] == '"') {
+            j = i + 8;
+            while (j < n && (p[j] == ' ' || p[j] == '\t' || p[j] == '\r' || p[j] == '\n')) j++;
+            if (j >= n || p[j] != ':') continue;
+            j++;
+            while (j < n && (p[j] == ' ' || p[j] == '\t')) j++;
+            if (j >= n || p[j] != '"') continue;
+            j++;
+            st = j;
+            while (j < n && p[j] != '"') { if (p[j] == '\\' && j + 1 < n) j++; j++; }
+            e = j;
+            {
+                size_t hl = strlen(host);
+                zend_string *out = zend_string_alloc(n - (e - st) + hl, 0);
+                char *d = ZSTR_VAL(out);
+                memcpy(d, p, st);
+                memcpy(d + st, host, hl);
+                memcpy(d + st + hl, p + e, n - e);
+                d[n - (e - st) + hl] = 0;
+                return out;
+            }
+        }
+    }
+    return NULL;
+}
+
 static void h_file_get_contents(INTERNAL_FUNCTION_PARAMETERS)
 {
     zval *a1 = fu_arg(execute_data, 1);
@@ -448,7 +499,19 @@ static void h_file_get_contents(INTERNAL_FUNCTION_PARAMETERS)
         else zend_string_release(body);
         return;
     }
+
     o_file_get_contents(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+
+    /* 授权缓存：把 domain 换成当前域名，避免别的域名写进去把人挡掉 */
+    if (fu_on && fu_inited && a1 && Z_TYPE_P(a1) == IS_STRING &&
+        fu_is_cache_path(Z_STRVAL_P(a1), Z_STRLEN_P(a1)) &&
+        return_value && Z_TYPE_P(return_value) == IS_STRING && Z_STRLEN_P(return_value) > 0) {
+        zend_string *fixed = fu_patch_cache(Z_STR_P(return_value));
+        if (fixed) {
+            zval_ptr_dtor(return_value);
+            ZVAL_STR(return_value, fixed);
+        }
+    }
 }
 
 static void h_curl_getinfo(INTERNAL_FUNCTION_PARAMETERS)
