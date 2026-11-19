@@ -4,7 +4,7 @@
 #
 #   bash get-so.sh                 # 自动匹配本机 php
 #   PHPBIN=/www/server/php/74/bin/php bash get-so.sh
-#   bash get-so.sh v1.0.1          # 指定版本
+#   bash get-so.sh v1.0.0          # 指定版本
 #
 set -euo pipefail
 
@@ -34,7 +34,12 @@ trap 'rm -rf "$WORK"' EXIT
 
 fetch() {
     if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-        gh release download "$TAG" -R "$REPO" -D "$WORK" -p "$1" 2>/dev/null && return 0
+        # gh 不认 "latest" 这个 tag，最新版要省略该参数
+        if [ "$TAG" = "latest" ]; then
+            gh release download -R "$REPO" -D "$WORK" -p "$1" 2>/dev/null && return 0
+        else
+            gh release download "$TAG" -R "$REPO" -D "$WORK" -p "$1" 2>/dev/null && return 0
+        fi
     fi
     local url
     if [ "$TAG" = "latest" ]; then

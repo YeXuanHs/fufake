@@ -65,14 +65,16 @@ ionCube 15 用自己的私有解释器执行 op_array，函数入口处拦不住
 ### 方式一：gh CLI（推荐，私有仓也能拉）
 
 ```bash
-gh release download latest -R YeXuanHs/fufake -D . -p 'fufake-php7.4-linux-x86_64.so'
+# 最新版：省略 tag 参数即可
+gh release download -R YeXuanHs/fufake -D . -p 'fufake-php7.4-linux-x86_64.so'
+gh release download -R YeXuanHs/fufake -D . -p 'SHA256SUMS'
 ```
 
-要指定版本就把 `latest` 换成 tag，例如 `v1.0.1`：
+要指定版本就把 tag 显式写上：
 
 ```bash
 gh release list -R YeXuanHs/fufake          # 看有哪些版本
-gh release download v1.0.1 -R YeXuanHs/fufake -D .
+gh release download v1.0.0 -R YeXuanHs/fufake -D .
 ```
 
 ### 方式二：一键脚本（自动匹配当前 PHP 版本）
@@ -85,7 +87,7 @@ bash get-so.sh
 
 脚本会读本机 `php -v`，下载对应的 `.so` 和 `SHA256SUMS`，校验后打印该放到哪个目录。
 指定 PHP 二进制：`PHPBIN=/www/server/php/74/bin/php bash get-so.sh`；
-指定版本：`bash get-so.sh v1.0.1`。
+指定版本：`bash get-so.sh v1.0.0`。
 
 仓库公开后也可以直接：
 
