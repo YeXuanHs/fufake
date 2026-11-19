@@ -30,6 +30,7 @@
 #define FU_CURLINFO_HTTP_CODE     0x200002   /* PHP 注册值 */
 #define FU_CURLINFO_HTTP_CODE_LL  0x20000A   /* libcurl 原生值 */
 #define FU_CURLINFO_EFFECTIVE_URL 0x100001
+#define FU_VERSION              "1.1.0"
 #define FU_CURLOPT_URL          10002
 #define FU_CURLOPT_POSTFIELDS   10015
 
@@ -572,7 +573,7 @@ PHP_MINFO_FUNCTION(fufake)
 {
     php_info_print_table_start();
     php_info_print_table_row(2, "fufake (fu-theme license bypass)", "enabled");
-    php_info_print_table_row(2, "version", "1.0");
+    php_info_print_table_row(2, "version", FU_VERSION);
     php_info_print_table_row(2, "intercept hosts", INI_STR("fufake.hosts"));
     php_info_print_table_row(2, "curl_exec hooked", o_curl_exec ? "yes" : "no");
     php_info_print_table_row(2, "security code", INI_STR("fufake.security_code"));
@@ -589,7 +590,7 @@ zend_module_entry fufake_module_entry = {
     PHP_RINIT(fufake),
     PHP_RSHUTDOWN(fufake),
     PHP_MINFO(fufake),
-    "1.0",
+    FU_VERSION,
     STANDARD_MODULE_PROPERTIES
 };
 
