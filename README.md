@@ -77,25 +77,7 @@ gh release list -R YeXuanHs/fufake          # 看有哪些版本
 gh release download v1.0.0 -R YeXuanHs/fufake -D .
 ```
 
-### 方式二：一键脚本（自动匹配当前 PHP 版本）
-
-```bash
-gh api repos/YeXuanHs/fufake/contents/scripts/get-so.sh \
-  -H 'Accept: application/vnd.github.raw' > get-so.sh
-bash get-so.sh
-```
-
-脚本会读本机 `php -v`，下载对应的 `.so` 和 `SHA256SUMS`，校验后打印该放到哪个目录。
-指定 PHP 二进制：`PHPBIN=/www/server/php/74/bin/php bash get-so.sh`；
-指定版本：`bash get-so.sh v1.0.0`。
-
-仓库公开后也可以直接：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/YeXuanHs/fufake/main/scripts/get-so.sh | bash
-```
-
-### 方式三：直链下载
+### 方式二：直链下载
 
 仓库设为公开后可直接取最新版：
 
