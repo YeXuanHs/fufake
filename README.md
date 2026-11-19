@@ -1,109 +1,203 @@
-# fufake —— 芙云模板（fu-theme）授权旁路扩展
+# fufake
 
-一个 PHP 7.2 / 7.3 / 7.4 扩展。装上以后模板**始终判定为已授权**，不用改任何模板文件。
+`芙云模板（fu-theme）`的授权门禁补丁，适配 1.0.x 版本，PHP 扩展，支持 7.2 / 7.3 / 7.4（NTS，x86_64 Linux）。
 
-## 拿现成的 .so
+不修改任何 ionCube 加密文件，只在运行时接管授权判定所依赖的网络响应。
 
-推 tag 就会出 Release，三个版本各一个：
+---
 
-```bash
-gh release download v1.0.0 -R <owner>/fufake -p '*.so'
-# fufake-php7.2-linux-x86_64.so
-# fufake-php7.3-linux-x86_64.so
-# fufake-php7.4-linux-x86_64.so
-```
+## 功能
 
-或者从 Actions 每次构建的 artifact 里取（push main 就有，含冒烟测试）。
-
-## 原理
-
-模板的授权判定只有两处网络出口，全部走 curl：
-
-| 位置 | 用途 |
+| 范围 | 处理 |
 |---|---|
-| `data/fu-theme/License.php::fu_license_remote_verify()` | 前台的 `action=verify` |
-| `data/fu-theme/FileManager.php::fu_license_http()` | 后台的 `license_info` / `verify_security_code` 等 |
+| 前台授权校验 | `fu_license_guard()` / `fu_license_is_authorized()` 拿到 `ok = true`，不查库、不发请求 |
+| 后台 API 门禁 | `api/index.php` 的全局前置判定通过，除 `license_status` / `license_recheck` 外所有 action 正常可用 |
+| 购物车 AJAX | `cart_catalog.php` 返回正常 JSON，不再 `403` |
+| 敏感操作二次校验 | `verify_security_code` 返回 `ok = true`，改域名等操作不再被拦 |
+| 在线更新 | 不影响 `update.fufuidc.com`，OTA 照旧可走 |
 
-本扩展在 C 层把 `curl_init` / `curl_setopt` / `curl_setopt_array` 里的 URL 记下来，
-`curl_exec` 时命中 `fufake.hosts`（默认 `mbauth.fufuidc.com`）就直接返回一份
-`data.authorized = true` 的 JSON，并让 `curl_getinfo($ch, CURLINFO_HTTP_CODE)` 返回 200。
-没装 curl 的环境下，`file_get_contents()` 也做了同样的兜底。
+---
 
-不碰 ionCube，不改 PHP 源码，不需要 mock 服务。
+## 工作原理
 
-## 编译
+### 授权判定位置
 
-每个 PHP 小版本各编一份（ABI 不通用）：
+- 前台：`themes/{web,cart,clientarea}/<theme>/includes/fy_b_4211b68db7.php` 被
+  `common/header.html`、`includes/head.tpl`、`includes/login_head.tpl`、`includes/currency.tpl`
+  引入，调用 `fu_theme_license_boot()` → include `data/fu-theme/License.php` → `fu_license_guard()`。
+- 后台：`fu-theme-admin/api/index.php` 在分发前统一判定，
+  `$action` 不是 `license_status` / `license_recheck` 时先走 `fu_license_is_authorized()`。
+- 购物车：`fu-theme-admin/cart_catalog.php` 未授权直接 `jsonresponse(..., 403)`。
+- 网络出口只有两处：`License.php::fu_license_remote_verify()` 与 `FileManager.php::fu_license_http()`，
+  全部指向 `https://mbauth.fufuidc.com/api.php`。
+
+### 接管方式
+
+ionCube 15 用自己的私有解释器执行 op_array，函数入口处拦不住，所以从 **curl 内部函数**入手：
+
+1. 替换 `curl_init()` / `curl_setopt()` / `curl_setopt_array()` 的 handler，记录「句柄 → URL」映射；
+2. 替换 `curl_exec()` 的 handler，命中 `fufake.hosts` 时不发请求，直接返回预置 JSON
+   （顶层与 `data` 内同时带 `authorized` / `ok = true`，兼容两种取法）；
+3. 替换 `curl_getinfo()` 的 handler，对伪造句柄返回 `CURLINFO_HTTP_CODE = 200`；
+4. `curl_exec()` 返回 `false`（服务器不可达）时同样兜底，避免落进 `network` / `stale` 分支；
+5. 替换 `file_get_contents()` 的 handler，未启用 curl 的环境同样生效。
+
+以上都只替换函数表中的 handler 指针，不修改磁盘文件、不写数据库、不碰 ionCube。
+
+---
+
+## 支持版本
+
+| PHP | 架构 |
+|---|---|
+| 7.2 NTS | x86_64 Linux |
+| 7.3 NTS | x86_64 Linux |
+| 7.4 NTS | x86_64 Linux |
+
+- 产物仅依赖 `libc.so.6`，最高符号版本 `GLIBC_2.4`，CentOS 7 / Debian 9 及以上可直接加载
+- ZTS 未验证
+- PHP 8 未适配
+
+---
+
+## 获取安装包
+
+### 方式一：gh CLI（推荐，私有仓也能拉）
 
 ```bash
-cd fufake
-/opt/php74/bin/phpize
-./configure --with-php-config=/opt/php74/bin/php-config
-make
-# 产物 modules/fufake.so
+gh release download latest -R YeXuanHs/fufake -D . -p 'fufake-php7.4-linux-x86_64.so'
 ```
 
-7.3 / 7.2 把 `php74` 换成对应的 prefix 即可。
+要指定版本就把 `latest` 换成 tag，例如 `v1.0.1`：
+
+```bash
+gh release list -R YeXuanHs/fufake          # 看有哪些版本
+gh release download v1.0.1 -R YeXuanHs/fufake -D .
+```
+
+### 方式二：一键脚本（自动匹配当前 PHP 版本）
+
+```bash
+gh api repos/YeXuanHs/fufake/contents/scripts/get-so.sh \
+  -H 'Accept: application/vnd.github.raw' > get-so.sh
+bash get-so.sh
+```
+
+脚本会读本机 `php -v`，下载对应的 `.so` 和 `SHA256SUMS`，校验后打印该放到哪个目录。
+指定 PHP 二进制：`PHPBIN=/www/server/php/74/bin/php bash get-so.sh`；
+指定版本：`bash get-so.sh v1.0.1`。
+
+仓库公开后也可以直接：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YeXuanHs/fufake/main/scripts/get-so.sh | bash
+```
+
+### 方式三：直链下载
+
+仓库设为公开后可直接取最新版：
+
+```bash
+V=7.4   # 7.2 / 7.3 / 7.4
+curl -fLO "https://github.com/YeXuanHs/fufake/releases/latest/download/fufake-php${V}-linux-x86_64.so"
+curl -fLO "https://github.com/YeXuanHs/fufake/releases/latest/download/SHA256SUMS"
+```
+
+私有仓需要带 token：
+
+```bash
+curl -fL -H "Authorization: token $GITHUB_TOKEN" \
+  -o fufake-php7.4-linux-x86_64.so \
+  "https://github.com/YeXuanHs/fufake/releases/latest/download/fufake-php7.4-linux-x86_64.so"
+```
+
+### 校验
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+### 从 Actions 取（不发布 Release 也行）
+
+每次 push 到 `main` 三个版本都会构建并跑冒烟测试，产物挂在对应 run 上：
+
+```bash
+gh run list -R YeXuanHs/fufake -L 1
+gh run download -R YeXuanHs/fufake <run-id> -D dist
+```
+
+---
 
 ## 安装
 
-```bash
-cp modules/fufake.so $(/opt/php74/bin/php-config --extension-dir)/
-```
-
-`php.ini` 末尾加一行（**放在 curl 之后**即可，加载顺序不影响功能）：
+把对应版本的 `.so` 放进 `extension_dir`，在 `php.ini` 中追加：
 
 ```ini
-extension=fufake.so
-```
+extension=/www/server/php/74/lib/php/extensions/no-debug-non-zts-20190902/fufake.so
 
-FPM 改完要重启：
+fufake.enable = 1
+fufake.hosts  = mbauth.fufuidc.com
+```
 
 ```bash
-systemctl restart php-fpm    # 或 service php-fpm restart
+systemctl restart php-fpm-74
+php --ri fufake
 ```
 
-## 配置
+命令行与 FPM 使用各自的 `php.ini`，需要分别配置。
 
-```ini
-fufake.enable = 1                        ; 总开关
-fufake.hosts  = mbauth.fufuidc.com       ; 要拦的域名，逗号分隔可省略（当前实现取首个）
-```
+---
+
+## 配置项
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `fufake.enable` | `1` | 总开关 |
+| `fufake.hosts` | `mbauth.fufuidc.com` | 要拦截的授权服务器域名 |
+
+---
 
 ## 验证
 
 ```bash
-# 1) 扩展有没有挂上
-php -i | grep -i fufake
-#    curl_exec hooked => yes
+# 扩展是否挂上
+php --ri fufake | grep -E 'enabled|hooked'
 
-# 2) 请求被不被拦
+# 请求是否被接管（应输出 authorized":true 和 200）
 php -r '$c=curl_init("https://mbauth.fufuidc.com/api.php?action=verify&product=fu-theme&domain=test.com");
 curl_setopt($c,CURLOPT_RETURNTRANSFER,1); echo curl_exec($c),"\n";
 echo curl_getinfo($c,CURLINFO_HTTP_CODE),"\n";'
-#    应输出 authorized":true 和 200
 
-# 3) 真实判定（需要 ionCube 已加载）
-php -r 'define("CMF_ROOT","/www/wwwroot/xxx/"); $_SERVER["HTTP_HOST"]="你的域名";
-include "/www/wwwroot/xxx/data/fu-theme/License.php"; var_dump(fu_license_is_authorized(true));'
-#    bool(true)
+# 真实判定（需 ionCube 已加载）
+php -r 'define("CMF_ROOT","/www/wwwroot/your-site/"); $_SERVER["HTTP_HOST"]="你的域名";
+include "/www/wwwroot/your-site/data/fu-theme/License.php";
+var_dump(fu_license_is_authorized(true));'
 ```
 
-模板自己会把结果写进 `data/fu-theme/storage/license.cache.json`，
-之后即使扩展被摘掉，只要缓存没过期（2 天）也仍然是已授权状态。
+模板命中后会把结果写进 `data/fu-theme/storage/license.cache.json`，
+之后即使扩展被摘掉，只要缓存未过期（2 天）也仍是已授权状态。
 
-## 行为细节
+---
 
-- 伪造的响应同时带顶层 `authorized` / `ok` 和 `data.authorized` / `data.ok`，
-  兼容 `fu_license_remote_verify`（读 `data.authorized`）和 `fu_theme_boot_remote_ok`（读 `data.authorized`）两种取法。
-- `action=verify_security_code` 也返回 `ok:true`，所以后台的敏感操作二次校验同样放行。
-- 只拦指定域名，`update.fufuidc.com`（在线更新）不受影响，升级照旧能走。
-- 句柄映射在 `curl_close` 时清理，长驻进程不会累积。
+## 构建
 
-## 文件
-
+```bash
+phpize
+./configure --with-php-config=$(which php-config)
+make -j"$(nproc)"
 ```
-fufake.c      扩展源码
-config.m4     构建配置
-modules/      编译产物
-```
+
+产物位于 `modules/fufake.so`。
+
+CI（`.github/workflows/build.yml`）在 push `main` 和推送 `v*` 标签时按 7.2 / 7.3 / 7.4 矩阵构建，
+执行「伪造 body + HTTP 200 + 退出码」冒烟测试，推送标签时把产物与 `SHA256SUMS` 发布到 Release。
+
+---
+
+## 说明
+
+- 仅修改请求内的函数表与句柄映射，不落盘
+- 只拦指定域名，不干扰在线更新与其他外部请求
+- 句柄映射在 `curl_close()` 与请求结束时释放，长驻进程不累积
+- 与 opcache 无冲突（加密代码的 op_array 不经过 opcache 缓存）
+- 仅用于自有或已获授权部署的环境
