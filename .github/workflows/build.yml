@@ -24,7 +24,7 @@ jobs:
           php-version: ${{ matrix.php }}
           tools: none
           coverage: none
-          extensions: none
+          extensions: curl
 
       - name: Build extension
         run: |
