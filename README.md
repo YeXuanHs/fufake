@@ -249,14 +249,11 @@ location ~ /assets/js/(fu-rt|fy-g-[0-9a-f]+)\.js$ {
 
 改完让访客强刷一次（Ctrl+F5）。**主题在线更新会把这两个文件还原，升级后需要重新覆盖。**
 
-`files/` 里还有一份 `fu-theme-admin/assets/About-CKr4JvPJ.js`（后台「关于我们」人员列表，加了 Ena），
-一次全铺也行：
+`files/` 里还有一份后台页面定制，一并覆盖即可：
 
 ```bash
 cp -a files/. "$SITE/"
 ```
-
-注意这个文件名带构建 hash，主题升级后可能变化，届时把 `const n=[...]` 那段人员数组搬进新文件即可。
 
 ---
 
