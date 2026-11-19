@@ -1,0 +1,73 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: php ${{ matrix.php }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        php: [ '7.2', '7.3', '7.4' ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: none
+          coverage: none
+          extensions: none
+
+      - name: Build extension
+        run: |
+          set -eux
+          php -v
+          php-config --version
+          mkdir -p build && cd build
+          cp ../src/config.m4 ../src/fufake.c .
+          phpize
+          ./configure --with-php-config="$(which php-config)"
+          make -j"$(nproc)"
+          mkdir -p ../dist
+          cp modules/fufake.so "../dist/fufake-php${{ matrix.php }}-linux-x86_64.so"
+
+      - name: Smoke test
+        run: |
+          set -eux
+          php -d extension="$PWD/build/modules/fufake.so" -r '
+            if (!extension_loaded("fufake")) { fwrite(STDERR, "not loaded\n"); exit(1); }
+            $c = curl_init("https://mbauth.fufuidc.com/api.php?action=verify&product=fu-theme&domain=ci.test");
+            curl_setopt($c, CURLOPT_RETURNTRANSFER, true);
+            $b = curl_exec($c);
+            $code = curl_getinfo($c, CURLINFO_HTTP_CODE);
+            echo $b, "\n", $code, "\n";
+            if (strpos($b, "\"authorized\":true") === false) { fwrite(STDERR, "body not faked\n"); exit(1); }
+            if ($code !== 200) { fwrite(STDERR, "http code not faked\n"); exit(1); }
+          '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fufake-php${{ matrix.php }}
+          path: dist/*.so
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.so
