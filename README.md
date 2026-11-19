@@ -11,6 +11,7 @@
 | 范围 | 处理 |
 |---|---|
 | 前台授权校验 | `fu_license_guard()` / `fu_license_is_authorized()` 拿到 `ok = true`，不查库、不发请求 |
+| 前台 JS 守卫 | `fu-rt.js` / `fy-g-*.js` 换成不发请求的版本（浏览器端校验，需覆盖文件，见下） |
 | 后台 API 门禁 | `api/index.php` 的全局前置判定通过，除 `license_status` / `license_recheck` 外所有 action 正常可用 |
 | 购物车 AJAX | `cart_catalog.php` 返回正常 JSON，不再 `403` |
 | 敏感操作二次校验 | `verify_security_code` 不再请求授权服务器，改由本扩展本地比对安全码 |
@@ -206,6 +207,47 @@ unzip -p "fu-theme-${V}.zip" VERSION
 | `upload/` | 只有系统图标 svg，**手动覆盖会冲掉站点已有的上传目录** |
 
 手动升级建议只挑改动文件覆盖，别整包解压到站点根目录。
+
+---
+
+## 前台 JS 守卫（必须覆盖）
+
+模板除了 PHP 侧，还在**浏览器端**做了一次授权校验，请求直接由访客浏览器发出：
+
+```
+https://mbauth.fufuidc.com/api.php?action=verify&product=fu-theme&domain=<当前域名>
+```
+
+拿不到 `authorized` 就 `alert` + 清空页面 + 跳回首页。这一步不经过服务器，**本扩展拦不到**，只能换文件。
+
+涉及两个文件（三个主题各一份，共 6 个）：
+
+| 文件 | 说明 |
+|---|---|
+| `assets/js/fu-rt.js` | 2 KB，base64+XOR 包装的守卫，逻辑就是上面那个请求 |
+| `assets/js/fy-g-44e21ecb69.js` | obfuscator.io 包装，payload 与 `fu-rt.js` 相同 |
+
+`files/` 目录里已经放好替换版（只置标志位，不发请求），按原层级覆盖即可：
+
+```bash
+SITE=/www/wwwroot/your-site/public
+cp -a files/themes/. "$SITE/themes/"
+
+# 三份都确认一下
+grep -l '__FU_LICENSE_GUARD_DONE' "$SITE"/themes/*/*/assets/js/fu-rt.js "$SITE"/themes/*/*/assets/js/fy-g-*.js
+```
+
+覆盖后建议给这两个文件加 no-cache，否则浏览器会按默认的 `expires 12h` 继续用旧文件：
+
+```nginx
+location ~ /assets/js/(fu-rt|fy-g-[0-9a-f]+)\.js$ {
+    expires -1;
+    add_header Cache-Control "no-cache, must-revalidate";
+    try_files $uri =404;
+}
+```
+
+改完让访客强刷一次（Ctrl+F5）。**主题在线更新会把这两个文件还原，升级后需要重新覆盖。**
 
 ---
 
