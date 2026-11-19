@@ -32,7 +32,7 @@ jobs:
           php -v
           php-config --version
           mkdir -p build && cd build
-          cp ../src/config.m4 ../src/fufake.c .
+          cp ../config.m4 ../fufake.c .
           phpize
           ./configure --with-php-config="$(which php-config)"
           make -j"$(nproc)"

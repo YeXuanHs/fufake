@@ -47,6 +47,7 @@ static HashTable fu_fake;    /* 已伪造过的句柄 */
 static zend_string *fu_pending = NULL;
 
 static zend_bool fu_on     = 1;
+static zend_bool fu_inited = 0;
 static char     *fu_hosts  = NULL;
 static size_t    fu_hosts_len = 0;
 
@@ -207,7 +208,7 @@ static void h_curl_init(INTERNAL_FUNCTION_PARAMETERS)
     zval *u = fu_arg(execute_data, 1);
 
     if (fu_pending) { zend_string_release(fu_pending); fu_pending = NULL; }
-    if (u && Z_TYPE_P(u) == IS_STRING && Z_STRLEN_P(u) > 0)
+    if (fu_inited && u && Z_TYPE_P(u) == IS_STRING && Z_STRLEN_P(u) > 0)
         fu_pending = zend_string_copy(Z_STR_P(u));
 
     o_curl_init(INTERNAL_FUNCTION_PARAM_PASSTHRU);
@@ -225,7 +226,7 @@ static void h_curl_setopt(INTERNAL_FUNCTION_PARAMETERS)
     zval *op = fu_arg(execute_data, 2);
     zval *vl = fu_arg(execute_data, 3);
 
-    if (ch && op && vl && Z_TYPE_P(op) == IS_LONG && Z_LVAL_P(op) == FU_CURLOPT_URL &&
+    if (fu_inited && ch && op && vl && Z_TYPE_P(op) == IS_LONG && Z_LVAL_P(op) == FU_CURLOPT_URL &&
         Z_TYPE_P(vl) == IS_STRING) {
         fu_store_url(ch, Z_STR_P(vl));
     }
@@ -237,7 +238,7 @@ static void h_curl_setopt_array(INTERNAL_FUNCTION_PARAMETERS)
     zval *ch = fu_arg(execute_data, 1);
     zval *ar = fu_arg(execute_data, 2);
 
-    if (ch && ar && Z_TYPE_P(ar) == IS_ARRAY) {
+    if (fu_inited && ch && ar && Z_TYPE_P(ar) == IS_ARRAY) {
         zval *v = zend_hash_index_find(Z_ARRVAL_P(ar), FU_CURLOPT_URL);
         if (v && Z_TYPE_P(v) == IS_STRING) fu_store_url(ch, Z_STR_P(v));
     }
@@ -249,7 +250,7 @@ static void h_curl_exec(INTERNAL_FUNCTION_PARAMETERS)
     zval *ch = fu_arg(execute_data, 1);
     zend_string *url;
 
-    if (fu_on && ch && (url = fu_get_url(ch)) != NULL &&
+    if (fu_on && fu_inited && ch && (url = fu_get_url(ch)) != NULL &&
         fu_is_license_url(ZSTR_VAL(url), ZSTR_LEN(url))) {
 
         zend_ulong k = fu_key(ch);
@@ -268,7 +269,7 @@ static void h_curl_exec(INTERNAL_FUNCTION_PARAMETERS)
     o_curl_exec(INTERNAL_FUNCTION_PARAM_PASSTHRU);
 
     /* 兜底：真连不上时也回授权，避免走 stale / network 分支 */
-    if (fu_on && ch && (url = fu_get_url(ch)) != NULL &&
+    if (fu_on && fu_inited && ch && (url = fu_get_url(ch)) != NULL &&
         fu_is_license_url(ZSTR_VAL(url), ZSTR_LEN(url))) {
         if (!return_value || Z_TYPE_P(return_value) == IS_FALSE) {
             zend_string *body = fu_build_body(url);
@@ -284,7 +285,7 @@ static void h_file_get_contents(INTERNAL_FUNCTION_PARAMETERS)
 {
     zval *a1 = fu_arg(execute_data, 1);
 
-    if (fu_on && a1 && Z_TYPE_P(a1) == IS_STRING &&
+    if (fu_on && fu_inited && a1 && Z_TYPE_P(a1) == IS_STRING &&
         fu_is_license_url(Z_STRVAL_P(a1), Z_STRLEN_P(a1))) {
         zend_string *body = fu_build_body(Z_STR_P(a1));
         if (return_value) ZVAL_STR(return_value, body);
@@ -300,7 +301,7 @@ static void h_curl_getinfo(INTERNAL_FUNCTION_PARAMETERS)
     zval *op = fu_arg(execute_data, 2);
     zend_ulong k;
 
-    if (fu_on && ch && op && Z_TYPE_P(op) == IS_LONG) {
+    if (fu_on && fu_inited && ch && op && Z_TYPE_P(op) == IS_LONG) {
         k = fu_key(ch);
         if (k && zend_hash_index_exists(&fu_fake, k)) {
             if (Z_LVAL_P(op) == FU_CURLINFO_HTTP_CODE || Z_LVAL_P(op) == FU_CURLINFO_HTTP_CODE_LL) {
@@ -361,16 +362,12 @@ PHP_INI_END()
 PHP_MINIT_FUNCTION(fufake)
 {
     REGISTER_INI_ENTRIES();
-    zend_hash_init(&fu_urls, 16, NULL, ZVAL_PTR_DTOR, 0);
-    zend_hash_init(&fu_fake, 16, NULL, NULL, 0);
     fu_hook_all();
     return SUCCESS;
 }
 
 PHP_MSHUTDOWN_FUNCTION(fufake)
 {
-    zend_hash_destroy(&fu_urls);
-    zend_hash_destroy(&fu_fake);
     UNREGISTER_INI_ENTRIES();
     return SUCCESS;
 }
@@ -386,6 +383,28 @@ PHP_RINIT_FUNCTION(fufake)
 
     /* curl 扩展可能晚于本扩展加载，这里补挂一次 */
     fu_hook_all();
+
+    /* 哈希表按请求生命周期管理：MINIT 阶段没有请求内存池，
+       在那里用非持久分配器初始化会在模块析构时把堆写坏 */
+    if (!fu_inited) {
+        zend_hash_init(&fu_urls, 16, NULL, ZVAL_PTR_DTOR, 0);
+        zend_hash_init(&fu_fake, 16, NULL, NULL, 0);
+        fu_inited = 1;
+    }
+    return SUCCESS;
+}
+
+PHP_RSHUTDOWN_FUNCTION(fufake)
+{
+    if (fu_inited) {
+        zend_hash_destroy(&fu_urls);
+        zend_hash_destroy(&fu_fake);
+        fu_inited = 0;
+    }
+    if (fu_pending) {
+        zend_string_release(fu_pending);
+        fu_pending = NULL;
+    }
     return SUCCESS;
 }
 
@@ -407,7 +426,7 @@ zend_module_entry fufake_module_entry = {
     PHP_MINIT(fufake),
     PHP_MSHUTDOWN(fufake),
     PHP_RINIT(fufake),
-    NULL,
+    PHP_RSHUTDOWN(fufake),
     PHP_MINFO(fufake),
     "1.0",
     STANDARD_MODULE_PROPERTIES
